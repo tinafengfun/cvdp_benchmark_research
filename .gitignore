@@ -13,6 +13,7 @@ work_*.txt
 /failure_analysis*/
 /model_sweep_results*
 github_token.md
+github_ref.
 *.tar.gz
 *.out
 test.out

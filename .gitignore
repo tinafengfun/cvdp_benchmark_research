@@ -12,3 +12,11 @@ work_*.txt
 /refinement_analysis*
 /failure_analysis*/
 /model_sweep_results*
+github_token.md
+*.tar.gz
+*.out
+test.out
+prompt.log
+cvdp_env/
+full_dataset/*.jsonl
+full_dataset/.cache/

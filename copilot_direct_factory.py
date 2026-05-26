@@ -253,6 +253,12 @@ class CopilotInstance:
     Implements the same interface as VLLM_Instance for CVDP.
     """
 
+    # Class-level usage tracking (shared across all instances)
+    _total_calls = 0
+    _total_prompt_tokens = 0
+    _total_completion_tokens = 0
+    _last_usage = {}
+
     def __init__(self, context: str = "You are a helpful assistant.",
                  key: Optional[str] = None,
                  model: Optional[str] = None,
@@ -264,11 +270,7 @@ class CopilotInstance:
         self.context = context
         self.debug = self._get_bool_env("COPILOT_DEBUG", False)
 
-        # Usage tracking (class-level, shared across all calls)
-        self.total_calls = 0
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
-        self._last_usage = {}
+        # Usage tracking uses class-level vars — shared across all instances
 
         # Model selection (mapped by copilot2api proxy)
         self.api_model = os.environ.get("COPILOT_MODEL", "gpt-5-mini")
@@ -419,13 +421,13 @@ class CopilotInstance:
         return None
 
     def get_usage_summary(self) -> dict:
-        """Return cumulative usage statistics."""
+        """Return cumulative usage statistics (class-level, shared across instances)."""
         return {
-            "total_calls": self.total_calls,
-            "total_prompt_tokens": self.total_prompt_tokens,
-            "total_completion_tokens": self.total_completion_tokens,
-            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
-            "last_call": self._last_usage,
+            "total_calls": CopilotInstance._total_calls,
+            "total_prompt_tokens": CopilotInstance._total_prompt_tokens,
+            "total_completion_tokens": CopilotInstance._total_completion_tokens,
+            "total_tokens": CopilotInstance._total_prompt_tokens + CopilotInstance._total_completion_tokens,
+            "last_call": CopilotInstance._last_usage,
         }
 
     def print_usage(self):
@@ -504,15 +506,15 @@ class CopilotInstance:
             content = self._coerce_text(data["choices"][0]["message"]["content"])
             finish_reason = data["choices"][0].get("finish_reason", "")
 
-            # Track usage
-            self.total_calls += 1
+            # Track usage (class-level counters — shared across all instances)
+            CopilotInstance._total_calls += 1
             usage = data.get("usage") or {}
             pt = usage.get("prompt_tokens", 0) or 0
             ct = usage.get("completion_tokens", 0) or 0
-            self.total_prompt_tokens += pt
-            self.total_completion_tokens += ct
-            self._last_usage = {
-                "call": self.total_calls,
+            CopilotInstance._total_prompt_tokens += pt
+            CopilotInstance._total_completion_tokens += ct
+            CopilotInstance._last_usage = {
+                "call": CopilotInstance._total_calls,
                 "prompt_tokens": pt,
                 "completion_tokens": ct,
                 "total_tokens": pt + ct,
@@ -522,7 +524,7 @@ class CopilotInstance:
 
             if self.debug:
                 logging.info("[Copilot] call=%s pt=%s ct=%s dur=%.1fs",
-                             self.total_calls, pt, ct, duration)
+                             CopilotInstance._total_calls, pt, ct, duration)
 
             if not content:
                 raise ValueError("Model returned empty response")

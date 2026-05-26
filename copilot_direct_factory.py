@@ -16,6 +16,7 @@ import time
 import logging
 import re
 import webbrowser
+import atexit
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from typing import Optional, Any
@@ -60,7 +61,7 @@ class CopilotAuth:
 
     def __init__(self, client_id: str = DEFAULT_CLIENT_ID):
         self.client_id = client_id
-        self._http = httpx.Client(follow_redirects=True)
+        self._http = httpx.Client(follow_redirects=True, trust_env=True)
         self._cached_copilot_token: Optional[str] = None
         self._cached_expires_at: float = 0
         self._load_cache()
@@ -263,12 +264,21 @@ class CopilotInstance:
         self.context = context
         self.debug = self._get_bool_env("COPILOT_DEBUG", False)
 
+        # Usage tracking (class-level, shared across all calls)
+        self.total_calls = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self._last_usage = {}
+
         # Model selection (mapped by copilot2api proxy)
         self.api_model = os.environ.get("COPILOT_MODEL", "gpt-5-mini")
 
         # Auth
         self._client_id = os.environ.get("COPILOT_CLIENT_ID", DEFAULT_CLIENT_ID)
         self._auth = CopilotAuth(client_id=self._client_id)
+
+        # Register usage report on exit
+        atexit.register(self.print_usage)
 
         # Generation params
         self.max_tokens = self._get_int_env("COPILOT_MAX_TOKENS", 16384)
@@ -408,6 +418,33 @@ class CopilotInstance:
             return f"expected one of {expected_names}, but found modules {sorted(declared)}"
         return None
 
+    def get_usage_summary(self) -> dict:
+        """Return cumulative usage statistics."""
+        return {
+            "total_calls": self.total_calls,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+            "last_call": self._last_usage,
+        }
+
+    def print_usage(self):
+        """Print usage summary to stderr."""
+        s = self.get_usage_summary()
+        print(f"\n{'='*50}", file=sys.stderr)
+        print(f"  Copilot Usage Summary", file=sys.stderr)
+        print(f"{'='*50}", file=sys.stderr)
+        print(f"  Total API calls:    {s['total_calls']}", file=sys.stderr)
+        print(f"  Prompt tokens:      {s['total_prompt_tokens']:,}", file=sys.stderr)
+        print(f"  Completion tokens:  {s['total_completion_tokens']:,}", file=sys.stderr)
+        print(f"  Total tokens:       {s['total_tokens']:,}", file=sys.stderr)
+        if s['total_calls'] > 0:
+            avg_pt = s['total_prompt_tokens'] / s['total_calls']
+            avg_ct = s['total_completion_tokens'] / s['total_calls']
+            print(f"  Avg prompt/call:    {avg_pt:.0f}", file=sys.stderr)
+            print(f"  Avg completion/call:{avg_ct:.0f}", file=sys.stderr)
+        print(f"{'='*50}\n", file=sys.stderr)
+
     @property
     def requires_evaluation(self) -> bool:
         return True
@@ -440,7 +477,7 @@ class CopilotInstance:
 
         try:
             start = time.time()
-            with httpx.Client(timeout=httpx.Timeout(actual_timeout)) as client:
+            with httpx.Client(timeout=httpx.Timeout(actual_timeout), trust_env=True) as client:
                 resp = client.post(
                     COPILOT_CHAT_API,
                     headers={
@@ -467,8 +504,25 @@ class CopilotInstance:
             content = self._coerce_text(data["choices"][0]["message"]["content"])
             finish_reason = data["choices"][0].get("finish_reason", "")
 
+            # Track usage
+            self.total_calls += 1
+            usage = data.get("usage") or {}
+            pt = usage.get("prompt_tokens", 0) or 0
+            ct = usage.get("completion_tokens", 0) or 0
+            self.total_prompt_tokens += pt
+            self.total_completion_tokens += ct
+            self._last_usage = {
+                "call": self.total_calls,
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": pt + ct,
+                "finish_reason": finish_reason,
+                "duration_s": round(duration, 2),
+            }
+
             if self.debug:
-                logging.info("[Copilot] len=%s finish=%s dur=%.1fs", len(content), finish_reason, duration)
+                logging.info("[Copilot] call=%s pt=%s ct=%s dur=%.1fs",
+                             self.total_calls, pt, ct, duration)
 
             if not content:
                 raise ValueError("Model returned empty response")
